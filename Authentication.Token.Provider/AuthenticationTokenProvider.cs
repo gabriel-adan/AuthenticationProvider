@@ -20,7 +20,7 @@ namespace Authentication.Token.Provider
             connection.Open();
         }
 
-        public string LogIn(string user, string password, ELoginTypes loginType)
+        public string LogIn(string user, string password, EAuthenticationField authenticationField)
         {
             string token = null;
             try
@@ -30,7 +30,7 @@ namespace Authentication.Token.Provider
                 IList<Claim> roles = new List<Claim>();
                 using (IDbCommand command = connection.CreateCommand())
                 {
-                    command.CommandText = string.Format("SELECT u.Id, CONCAT(u.FirstName, ' ', u.LastName) AS FullName, u.UserName, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword AND u.IsEnabled;", (loginType == ELoginTypes.EMAIL ? "Email" : "UserName"));
+                    command.CommandText = string.Format("SELECT u.Id, CONCAT(u.FirstName, ' ', u.LastName) AS FullName, u.UserName, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword AND u.IsEnabled;", (authenticationField == EAuthenticationField.EMAIL ? "Email" : "UserName"));
                     IDbDataParameter userNameParameter = command.CreateParameter();
                     userNameParameter.DbType = DbType.String;
                     userNameParameter.ParameterName = "@pUserName";
@@ -86,7 +86,7 @@ namespace Authentication.Token.Provider
                     string validAudience = authTokenConfig.ValidAudience;
                     double tokenExpirationMinutes = authTokenConfig.TokenExpirationMinutes;
                     roles.Add(new Claim("User", userName));
-                    roles.Add(new Claim(ClaimTypes.Name, (loginType == ELoginTypes.EMAIL ? email : userName)));
+                    roles.Add(new Claim(ClaimTypes.Name, (authenticationField == EAuthenticationField.EMAIL ? email : userName)));
                     roles.Add(new Claim("UserName", fullName));
                     roles.Add(new Claim(ClaimTypes.Email, email));
                     roles.Add(new Claim(ClaimTypes.System, authTokenConfig.AppName));
@@ -115,22 +115,28 @@ namespace Authentication.Token.Provider
             connection.Dispose();
         }
 
-        public bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, ELoginTypes loginType)
+        public bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField)
         {
             try
             {
-                if (loginType == ELoginTypes.USERNAME && string.IsNullOrEmpty(userName))
+                if (string.IsNullOrEmpty(firstName))
+                    throw new ArgumentNullException("Se requiere un nombre");
+                if (string.IsNullOrEmpty(lastName))
+                    throw new ArgumentNullException("Se requiere un apellido");
+                if (string.IsNullOrEmpty(password))
+                    throw new ArgumentNullException("Se requiere una contraseña");
+                if (authenticationField == EAuthenticationField.USERNAME && string.IsNullOrEmpty(userName))
                     throw new ArgumentNullException("Se requiere un nombre de usuario");
-                if (loginType == ELoginTypes.EMAIL && string.IsNullOrEmpty(email))
+                if (authenticationField == EAuthenticationField.EMAIL && string.IsNullOrEmpty(email))
                     throw new ArgumentNullException("Se requiere una dirección de correo electrónico");
                 string fieldName = string.Empty;
                 string user = string.Empty;
-                if (loginType == ELoginTypes.EMAIL)
+                if (authenticationField == EAuthenticationField.EMAIL)
                 {
                     fieldName = "Email";
                     user = email;
                 }
-                if (loginType == ELoginTypes.USERNAME)
+                if (authenticationField == EAuthenticationField.USERNAME)
                 {
                     fieldName = "UserName";
                     user = userName;

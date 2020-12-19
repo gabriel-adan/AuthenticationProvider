@@ -1,6 +1,6 @@
 ﻿namespace Authentication.Token.Provider
 {
-    public enum ELoginTypes
+    public enum EAuthenticationField
     {
         USERNAME = 0,
         EMAIL = 1
