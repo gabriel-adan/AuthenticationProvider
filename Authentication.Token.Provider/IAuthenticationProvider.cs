@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace Authentication.Token.Provider
 {
@@ -6,6 +7,8 @@ namespace Authentication.Token.Provider
     {
         T LogIn(string user, string password, EAuthenticationField authenticationField);
 
-        bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField);
+        bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles = null);
+
+        bool ConfirmAccount(string userName, EAuthenticationField authenticationField);
     }
 }

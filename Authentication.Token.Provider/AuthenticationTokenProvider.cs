@@ -115,10 +115,12 @@ namespace Authentication.Token.Provider
             connection.Dispose();
         }
 
-        public bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField)
+        public bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles)
         {
+            IDbTransaction dbTransaction = null;
             try
             {
+                dbTransaction = connection.BeginTransaction();
                 if (string.IsNullOrEmpty(firstName))
                     throw new ArgumentNullException("Se requiere un nombre");
                 if (string.IsNullOrEmpty(lastName))
@@ -160,9 +162,11 @@ namespace Authentication.Token.Provider
                             throw new ArgumentNullException("Ya existe una cuenta de usuario con estos datos");
                     }
                 }
+                int userId = 0;
                 using (IDbCommand command = connection.CreateCommand())
                 {
-                    command.CommandText = "INSERT INTO user(FirstName, LastName, UserName, Password, IsEnabled, Email) VALUES (@pFirstName, @pLastName, @pUserName, @pPassword, @pIsEnabled, @pEmail);";
+                    command.Transaction = dbTransaction;
+                    command.CommandText = "INSERT INTO user(FirstName, LastName, UserName, Password, IsEnabled, Email) VALUES (@pFirstName, @pLastName, @pUserName, @pPassword, @pIsEnabled, @pEmail);SELECT LAST_INSERT_ID();";
                     IDbDataParameter firstNameParameter = command.CreateParameter();
                     firstNameParameter.DbType = DbType.String;
                     firstNameParameter.ParameterName = "@pFirstName";
@@ -193,6 +197,109 @@ namespace Authentication.Token.Provider
                     emailParameter.ParameterName = "@pEmail";
                     emailParameter.Value = email;
                     command.Parameters.Add(emailParameter);
+
+                    userId = (int)command.ExecuteScalar();
+                }
+                if (userId > 0)
+                {
+                    IList<int> roleIds = new List<int>();
+                    if (roles != null && roles.Count > 0)
+                    {
+                        string query = "SELECT r.Id FROM role r INNER JOIN application a ON a.Id = r.Application_Id WHERE a.Name = @pAppName AND r.Name IN (";
+                        foreach (string role in roles)
+                            query += "'" + role + "', ";
+                        query += "-";
+                        query = query.Replace(", -", ");");
+
+                        using (IDbCommand command = connection.CreateCommand())
+                        {
+                            command.CommandText = query;
+                            IDbDataParameter appNameParameter = command.CreateParameter();
+                            appNameParameter.DbType = DbType.String;
+                            appNameParameter.ParameterName = "@pAppName";
+                            appNameParameter.Value = authTokenConfig.AppName;
+                            command.Parameters.Add(appNameParameter);
+                            using (IDataReader reader = command.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                    roleIds.Add(reader.GetInt32(0));
+                            }
+                        }
+
+                        if (roles.Count != roleIds.Count)
+                            throw new Exception("Roles inválidos para la aplicación: " + authTokenConfig.AppName);
+
+                        query = "INSERT INTO user_role(User_Id, Role_Id) VALUES (";
+                        foreach (int roleId in roleIds)
+                            query += userId + ", " + roleId + "), ";
+                        query += "-";
+                        query = query.Replace(", -", ");");
+
+                        using (IDbCommand command = connection.CreateCommand())
+                        {
+                            command.CommandText = query;
+                            command.ExecuteNonQuery();
+                        }
+                    }
+                    dbTransaction.Commit();
+                    return true;
+                }
+                else
+                {
+                    dbTransaction.Rollback();
+                    return false;
+                }
+            }
+            catch
+            {
+                if (dbTransaction != null)
+                {
+                    dbTransaction.Rollback();
+                    dbTransaction.Dispose();
+                }
+                throw;
+            }
+        }
+
+        public bool ConfirmAccount(string userName, EAuthenticationField authenticationField)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(userName))
+                    throw new ArgumentNullException("Cuenta inválida");
+                string fieldName = string.Empty;
+                if (authenticationField == EAuthenticationField.USERNAME)
+                    fieldName = "UserName";
+                if (authenticationField == EAuthenticationField.EMAIL)
+                    fieldName = "Email";
+                int id = 0;
+                using (IDbCommand command = connection.CreateCommand())
+                {
+                    command.CommandText = string.Format("SELECT u.Id, u.IsEnabled FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.IsEnabled AND u.{0} = @pUserName AND a.Name = @pAppName;", fieldName);
+                    IDbDataParameter userNameParameter = command.CreateParameter();
+                    userNameParameter.DbType = DbType.String;
+                    userNameParameter.ParameterName = "@pUserName";
+                    userNameParameter.Value = userName;
+                    command.Parameters.Add(userNameParameter);
+                    IDbDataParameter appNameParameter = command.CreateParameter();
+                    appNameParameter.DbType = DbType.String;
+                    appNameParameter.ParameterName = "@pAppName";
+                    appNameParameter.Value = authTokenConfig.AppName;
+                    command.Parameters.Add(appNameParameter);
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            if (reader.GetBoolean(1))
+                                throw new ArgumentNullException("Ya existe una cuenta de usuario con estos datos");
+                            else
+                                id = reader.GetInt32(0);
+                        }
+                    }
+                }
+                using (IDbCommand command = connection.CreateCommand())
+                {
+                    command.CommandText = string.Format("UPDATE user SET IsEnabled = 1 WHERE Id = {0};", id);
                     return command.ExecuteNonQuery() > 0;
                 }
             }
