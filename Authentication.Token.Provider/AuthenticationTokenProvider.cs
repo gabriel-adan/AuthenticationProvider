@@ -105,15 +105,15 @@ namespace Authentication.Token.Provider
             {
                 transaction = connection.BeginTransaction();
                 if (string.IsNullOrEmpty(firstName))
-                    throw new ArgumentNullException("Se requiere un nombre");
+                    throw new ArgumentException("Se requiere un nombre");
                 if (string.IsNullOrEmpty(lastName))
-                    throw new ArgumentNullException("Se requiere un apellido");
+                    throw new ArgumentException("Se requiere un apellido");
                 if (string.IsNullOrEmpty(password))
-                    throw new ArgumentNullException("Se requiere una contraseña");
+                    throw new ArgumentException("Se requiere una contraseña");
                 if (authenticationField == EAuthenticationField.USERNAME && string.IsNullOrEmpty(userName))
-                    throw new ArgumentNullException("Se requiere un nombre de usuario");
+                    throw new ArgumentException("Se requiere un nombre de usuario");
                 if (authenticationField == EAuthenticationField.EMAIL && string.IsNullOrEmpty(email))
-                    throw new ArgumentNullException("Se requiere una dirección de correo electrónico");
+                    throw new ArgumentException("Se requiere una dirección de correo electrónico");
                 string fieldName = string.Empty;
                 string user = string.Empty;
                 if (authenticationField == EAuthenticationField.EMAIL)
@@ -132,7 +132,7 @@ namespace Authentication.Token.Provider
                     using (IDataReader reader = command.ExecuteReader())
                     {
                         if (reader.Read())
-                            throw new ArgumentNullException("Ya existe una cuenta de usuario con estos datos");
+                            throw new ArgumentException("Ya existe una cuenta de usuario con estos datos");
                     }
                 }
                 int userId = 0;
@@ -206,7 +206,7 @@ namespace Authentication.Token.Provider
             try
             {
                 if (string.IsNullOrEmpty(userName))
-                    throw new ArgumentNullException("Cuenta inválida");
+                    throw new ArgumentException("Cuenta inválida");
                 string fieldName = string.Empty;
                 if (authenticationField == EAuthenticationField.USERNAME)
                     fieldName = "UserName";
@@ -221,7 +221,7 @@ namespace Authentication.Token.Provider
                         if (reader.Read())
                         {
                             if (reader.GetBoolean(1))
-                                throw new ArgumentNullException("Ya existe una cuenta de usuario con estos datos");
+                                throw new ArgumentException("Ya existe una cuenta de usuario con estos datos");
                             else
                                 id = reader.GetInt32(0);
                         }
