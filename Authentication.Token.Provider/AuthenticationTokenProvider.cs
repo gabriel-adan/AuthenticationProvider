@@ -5,13 +5,15 @@ using System.Security.Claims;
 using System.Collections.Generic;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
+using Authentication.Token.Provider.Model;
 
 namespace Authentication.Token.Provider
 {
     public class AuthenticationTokenProvider : IAuthenticationTokenProvider
     {
-        private readonly IDbConnection connection;
         private readonly AuthTokenProviderConfiguration authTokenConfig;
+        private readonly IDbConnection connection;
+        private IDbTransaction transaction;
 
         public AuthenticationTokenProvider(IDbConnection dbConnection, AuthTokenProviderConfiguration config)
         {
@@ -20,56 +22,37 @@ namespace Authentication.Token.Provider
             connection.Open();
         }
 
-        public string LogIn(string user, string password, EAuthenticationField authenticationField)
+        public string LogIn(string userName, string password, EAuthenticationField authenticationField)
         {
             string token = null;
             try
             {
-                int id = 0;
-                string fullName = string.Empty, userName = string.Empty, email = string.Empty;
+                User user = null;
                 IList<Claim> roles = new List<Claim>();
-                using (IDbCommand command = connection.CreateCommand())
+                string query = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword AND u.IsEnabled;", (authenticationField == EAuthenticationField.EMAIL ? "Email" : "UserName"));
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pPassword" }, new DbType[] { DbType.String, DbType.String }, new object[] { userName, password }))
                 {
-                    command.CommandText = string.Format("SELECT u.Id, CONCAT(u.FirstName, ' ', u.LastName) AS FullName, u.UserName, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword AND u.IsEnabled;", (authenticationField == EAuthenticationField.EMAIL ? "Email" : "UserName"));
-                    IDbDataParameter userNameParameter = command.CreateParameter();
-                    userNameParameter.DbType = DbType.String;
-                    userNameParameter.ParameterName = "@pUserName";
-                    userNameParameter.Value = user;
-                    command.Parameters.Add(userNameParameter);
-                    IDbDataParameter passwordParameter = command.CreateParameter();
-                    passwordParameter.DbType = DbType.String;
-                    passwordParameter.ParameterName = "@pPassword";
-                    passwordParameter.Value = password;
-                    command.Parameters.Add(passwordParameter);
-                    IDataReader reader = command.ExecuteReader();
-                    if (reader.Read())
+                    using (IDataReader reader = command.ExecuteReader())
                     {
-                        id = reader.GetInt32(0);
-                        fullName = reader.GetString(1);
-                        if (!reader.IsDBNull(2))
-                            userName = reader.GetString(2);
-                        if (!reader.IsDBNull(3))
-                            email = reader.GetString(3);
+                        if (reader.Read())
+                        {
+                            user = new User();
+                            user.Id = reader.GetInt32(0);
+                            user.FirstName = reader.GetString(1);
+                            user.LastName = reader.GetString(2);
+                            if (!reader.IsDBNull(3))
+                                user.UserName = reader.GetString(3);
+                            user.IsEnabled = reader.GetBoolean(4);
+                            if (!reader.IsDBNull(5))
+                                user.Email = reader.GetString(5);
+                        }
                     }
-                    command.Dispose();
-                    reader.Close();
-                    reader.Dispose();
                 }
-                if (id > 0)
+                if (user != null)
                 {
-                    using (IDbCommand command = connection.CreateCommand())
+                    query = "SELECT r.Name FROM User_Role ur INNER JOIN Role r ON r.Id = ur.Role_Id INNER JOIN Application a ON a.Id = r.Application_Id WHERE ur.User_Id = @pId AND a.Name = @pAppName;";
+                    using (IDbCommand command = BuildCommand(query, new string[] { "@pId", "@pAppName" }, new DbType[] { DbType.Int32, DbType.String }, new object[] { user.Id, authTokenConfig.AppName }))
                     {
-                        command.CommandText = "SELECT r.Name FROM User_Role ur INNER JOIN Role r ON r.Id = ur.Role_Id INNER JOIN Application a ON a.Id = r.Application_Id WHERE ur.User_Id = @pId AND a.Name = @pAppName;";
-                        IDbDataParameter userIdParameter = command.CreateParameter();
-                        userIdParameter.DbType = DbType.Int32;
-                        userIdParameter.ParameterName = "@pId";
-                        userIdParameter.Value = id;
-                        command.Parameters.Add(userIdParameter);
-                        IDbDataParameter appNameParameter = command.CreateParameter();
-                        appNameParameter.DbType = DbType.String;
-                        appNameParameter.ParameterName = "@pAppName";
-                        appNameParameter.Value = authTokenConfig.AppName;
-                        command.Parameters.Add(appNameParameter);
                         using (IDataReader reader = command.ExecuteReader())
                         {
                             while (reader.Read())
@@ -85,10 +68,10 @@ namespace Authentication.Token.Provider
                     string validIssuer = authTokenConfig.ValidIssuer;
                     string validAudience = authTokenConfig.ValidAudience;
                     double tokenExpirationMinutes = authTokenConfig.TokenExpirationMinutes;
-                    roles.Add(new Claim("User", userName));
-                    roles.Add(new Claim(ClaimTypes.Name, (authenticationField == EAuthenticationField.EMAIL ? email : userName)));
-                    roles.Add(new Claim("UserName", fullName));
-                    roles.Add(new Claim(ClaimTypes.Email, email));
+                    roles.Add(new Claim("User", user.UserName));
+                    roles.Add(new Claim(ClaimTypes.Name, (authenticationField == EAuthenticationField.EMAIL ? user.Email : user.UserName)));
+                    roles.Add(new Claim("UserName", user.FirstName + " " + user.LastName));
+                    roles.Add(new Claim(ClaimTypes.Email, user.Email));
                     roles.Add(new Claim(ClaimTypes.System, authTokenConfig.AppName));
                     roles.Add(new Claim(JwtHeaderParameterNames.Kid, Guid.NewGuid().ToString()));
                     var jwToken = new JwtSecurityToken(
@@ -117,10 +100,10 @@ namespace Authentication.Token.Provider
 
         public bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles)
         {
-            IDbTransaction dbTransaction = null;
+            transaction = null;
             try
             {
-                dbTransaction = connection.BeginTransaction();
+                transaction = connection.BeginTransaction();
                 if (string.IsNullOrEmpty(firstName))
                     throw new ArgumentNullException("Se requiere un nombre");
                 if (string.IsNullOrEmpty(lastName))
@@ -143,19 +126,9 @@ namespace Authentication.Token.Provider
                     fieldName = "UserName";
                     user = userName;
                 }
-                using (IDbCommand command = connection.CreateCommand())
+                string query = string.Format("SELECT u.Id FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.{0} = @pUserName AND a.Name = @pAppName;", fieldName);
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { user, authTokenConfig.AppName }))
                 {
-                    command.CommandText = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.{0} = @pUserName AND a.Name = @pAppName;", fieldName);
-                    IDbDataParameter userNameParameter = command.CreateParameter();
-                    userNameParameter.DbType = DbType.String;
-                    userNameParameter.ParameterName = "@pUserName";
-                    userNameParameter.Value = user;
-                    command.Parameters.Add(userNameParameter);
-                    IDbDataParameter appNameParameter = command.CreateParameter();
-                    appNameParameter.DbType = DbType.String;
-                    appNameParameter.ParameterName = "@pAppName";
-                    appNameParameter.Value = authTokenConfig.AppName;
-                    command.Parameters.Add(appNameParameter);
                     using (IDataReader reader = command.ExecuteReader())
                     {
                         if (reader.Read())
@@ -163,41 +136,13 @@ namespace Authentication.Token.Provider
                     }
                 }
                 int userId = 0;
-                using (IDbCommand command = connection.CreateCommand())
+                query = "INSERT INTO user(FirstName, LastName, UserName, Password, IsEnabled, Email) VALUES (@pFirstName, @pLastName, @pUserName, @pPassword, @pIsEnabled, @pEmail);SELECT LAST_INSERT_ID();";
+                using (IDbCommand command = BuildCommand(query, 
+                    new string[] { "@pFirstName", "@pLastName", "@pUserName", "@pPassword", "@pIsEnabled", "@pEmail" }, 
+                    new DbType[] { DbType.String, DbType.String, DbType.String, DbType.String, DbType.Boolean, DbType.String }, 
+                    new object[] { firstName, lastName, userName, password, isEnabled, email }))
                 {
-                    command.Transaction = dbTransaction;
-                    command.CommandText = "INSERT INTO user(FirstName, LastName, UserName, Password, IsEnabled, Email) VALUES (@pFirstName, @pLastName, @pUserName, @pPassword, @pIsEnabled, @pEmail);SELECT LAST_INSERT_ID();";
-                    IDbDataParameter firstNameParameter = command.CreateParameter();
-                    firstNameParameter.DbType = DbType.String;
-                    firstNameParameter.ParameterName = "@pFirstName";
-                    firstNameParameter.Value = firstName;
-                    command.Parameters.Add(firstNameParameter);
-                    IDbDataParameter lastNameParameter = command.CreateParameter();
-                    lastNameParameter.DbType = DbType.String;
-                    lastNameParameter.ParameterName = "@pLastName";
-                    lastNameParameter.Value = lastName;
-                    command.Parameters.Add(lastNameParameter);
-                    IDbDataParameter userNameParameter = command.CreateParameter();
-                    userNameParameter.DbType = DbType.String;
-                    userNameParameter.ParameterName = "@pUserName";
-                    userNameParameter.Value = userName;
-                    command.Parameters.Add(userNameParameter);
-                    IDbDataParameter passwordParameter = command.CreateParameter();
-                    passwordParameter.DbType = DbType.String;
-                    passwordParameter.ParameterName = "@pPassword";
-                    passwordParameter.Value = password;
-                    command.Parameters.Add(passwordParameter);
-                    IDbDataParameter isEnabledParameter = command.CreateParameter();
-                    isEnabledParameter.DbType = DbType.Boolean;
-                    isEnabledParameter.ParameterName = "@pIsEnabled";
-                    isEnabledParameter.Value = isEnabled;
-                    command.Parameters.Add(isEnabledParameter);
-                    IDbDataParameter emailParameter = command.CreateParameter();
-                    emailParameter.DbType = DbType.String;
-                    emailParameter.ParameterName = "@pEmail";
-                    emailParameter.Value = email;
-                    command.Parameters.Add(emailParameter);
-
+                    command.Transaction = transaction;
                     userId = (int)command.ExecuteScalar();
                 }
                 if (userId > 0)
@@ -205,20 +150,14 @@ namespace Authentication.Token.Provider
                     IList<int> roleIds = new List<int>();
                     if (roles != null && roles.Count > 0)
                     {
-                        string query = "SELECT r.Id FROM role r INNER JOIN application a ON a.Id = r.Application_Id WHERE a.Name = @pAppName AND r.Name IN (";
+                        query = "SELECT r.Id FROM role r INNER JOIN application a ON a.Id = r.Application_Id WHERE a.Name = @pAppName AND r.Name IN (";
                         foreach (string role in roles)
                             query += "'" + role + "', ";
                         query += "-";
                         query = query.Replace(", -", ");");
 
-                        using (IDbCommand command = connection.CreateCommand())
+                        using (IDbCommand command = BuildCommand(query, new string[] { "@pAppName" }, new DbType[] { DbType.String }, new object[] { authTokenConfig.AppName }))
                         {
-                            command.CommandText = query;
-                            IDbDataParameter appNameParameter = command.CreateParameter();
-                            appNameParameter.DbType = DbType.String;
-                            appNameParameter.ParameterName = "@pAppName";
-                            appNameParameter.Value = authTokenConfig.AppName;
-                            command.Parameters.Add(appNameParameter);
                             using (IDataReader reader = command.ExecuteReader())
                             {
                                 while (reader.Read())
@@ -238,24 +177,25 @@ namespace Authentication.Token.Provider
                         using (IDbCommand command = connection.CreateCommand())
                         {
                             command.CommandText = query;
+                            command.Transaction = transaction;
                             command.ExecuteNonQuery();
                         }
                     }
-                    dbTransaction.Commit();
+                    transaction.Commit();
                     return true;
                 }
                 else
                 {
-                    dbTransaction.Rollback();
+                    transaction.Rollback();
                     return false;
                 }
             }
             catch
             {
-                if (dbTransaction != null)
+                if (transaction != null)
                 {
-                    dbTransaction.Rollback();
-                    dbTransaction.Dispose();
+                    transaction.Rollback();
+                    transaction.Dispose();
                 }
                 throw;
             }
@@ -273,19 +213,9 @@ namespace Authentication.Token.Provider
                 if (authenticationField == EAuthenticationField.EMAIL)
                     fieldName = "Email";
                 int id = 0;
-                using (IDbCommand command = connection.CreateCommand())
+                string query = string.Format("SELECT u.Id, u.IsEnabled FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.IsEnabled AND u.{0} = @pUserName AND a.Name = @pAppName;", fieldName);
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { userName, authTokenConfig.AppName }))
                 {
-                    command.CommandText = string.Format("SELECT u.Id, u.IsEnabled FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.IsEnabled AND u.{0} = @pUserName AND a.Name = @pAppName;", fieldName);
-                    IDbDataParameter userNameParameter = command.CreateParameter();
-                    userNameParameter.DbType = DbType.String;
-                    userNameParameter.ParameterName = "@pUserName";
-                    userNameParameter.Value = userName;
-                    command.Parameters.Add(userNameParameter);
-                    IDbDataParameter appNameParameter = command.CreateParameter();
-                    appNameParameter.DbType = DbType.String;
-                    appNameParameter.ParameterName = "@pAppName";
-                    appNameParameter.Value = authTokenConfig.AppName;
-                    command.Parameters.Add(appNameParameter);
                     using (IDataReader reader = command.ExecuteReader())
                     {
                         if (reader.Read())
@@ -307,6 +237,32 @@ namespace Authentication.Token.Provider
             {
                 throw;
             }
+        }
+
+        IDbCommand BuildCommand(string query, string[] paramNames, DbType[] dbTypes, object[] values)
+        {
+            if (paramNames == null || dbTypes == null || values == null)
+                throw new Exception("Error de parámetros al crear el comando.");
+            int countParamNames = paramNames.Length;
+            int countDbTypes = dbTypes.Length;
+            int countValues = values.Length;
+            if (countParamNames != countDbTypes || countParamNames != countValues)
+                throw new Exception("Error de parámetros al crear el comando.");
+
+            IDbCommand command = connection.CreateCommand();
+            command.CommandText = query;
+            for (int i = 0; i < countParamNames; i++)
+            {
+                string paramName = paramNames[i];
+                DbType dbType = dbTypes[i];
+                object value = values[i];
+                IDbDataParameter parameter = command.CreateParameter();
+                parameter.ParameterName = paramName;
+                parameter.DbType = dbType;
+                parameter.Value = value;
+                command.Parameters.Add(parameter);
+            }
+            return command;
         }
     }
 }
