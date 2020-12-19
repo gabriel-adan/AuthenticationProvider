@@ -20,7 +20,7 @@ namespace Authentication.Token.Provider
             connection.Open();
         }
 
-        public string LogIn(string user, string password)
+        public string LogIn(string user, string password, ELoginTypes loginType)
         {
             string token = null;
             try
@@ -30,7 +30,7 @@ namespace Authentication.Token.Provider
                 IList<Claim> roles = new List<Claim>();
                 using (IDbCommand command = connection.CreateCommand())
                 {
-                    command.CommandText = "SELECT u.Id, CONCAT(u.FirstName, ' ', u.LastName) AS FullName, u.UserName, u.Email FROM User u WHERE u.UserName = @pUserName AND u.Password = @pPassword AND u.IsEnabled;";
+                    command.CommandText = string.Format("SELECT u.Id, CONCAT(u.FirstName, ' ', u.LastName) AS FullName, u.UserName, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword AND u.IsEnabled;", (loginType == ELoginTypes.EMAIL ? "Email" : "UserName"));
                     IDbDataParameter userNameParameter = command.CreateParameter();
                     userNameParameter.DbType = DbType.String;
                     userNameParameter.ParameterName = "@pUserName";
@@ -46,7 +46,8 @@ namespace Authentication.Token.Provider
                     {
                         id = reader.GetInt32(0);
                         fullName = reader.GetString(1);
-                        userName = reader.GetString(2);
+                        if (!reader.IsDBNull(2))
+                            userName = reader.GetString(2);
                         if (!reader.IsDBNull(3))
                             email = reader.GetString(3);
                     }
@@ -86,7 +87,7 @@ namespace Authentication.Token.Provider
                     string validAudience = authTokenConfig.ValidAudience;
                     double tokenExpirationMinutes = authTokenConfig.TokenExpirationMinutes;
                     roles.Add(new Claim("User", userName));
-                    roles.Add(new Claim(ClaimTypes.Name, userName));
+                    roles.Add(new Claim(ClaimTypes.Name, (loginType == ELoginTypes.EMAIL ? email : userName)));
                     roles.Add(new Claim("UserName", fullName));
                     roles.Add(new Claim(ClaimTypes.Email, email));
                     roles.Add(new Claim(ClaimTypes.System, authTokenConfig.AppName));
