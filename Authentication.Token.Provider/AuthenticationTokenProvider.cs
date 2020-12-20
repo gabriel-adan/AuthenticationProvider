@@ -29,7 +29,7 @@ namespace Authentication.Token.Provider
             {
                 User user = null;
                 IList<Claim> roles = new List<Claim>();
-                string query = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword AND u.IsEnabled;", (authenticationField == EAuthenticationField.EMAIL ? "Email" : "UserName"));
+                string query = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword;", (authenticationField == EAuthenticationField.EMAIL ? "Email" : "UserName"));
                 using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pPassword" }, new DbType[] { DbType.String, DbType.String }, new object[] { userName, password }))
                 {
                     using (IDataReader reader = command.ExecuteReader())
@@ -50,6 +50,8 @@ namespace Authentication.Token.Provider
                 }
                 if (user != null)
                 {
+                    if (!user.IsEnabled)
+                        throw new ArgumentException("La cuenta existe pero no está validada o habilitada");
                     query = "SELECT r.Name FROM User_Role ur INNER JOIN Role r ON r.Id = ur.Role_Id INNER JOIN Application a ON a.Id = r.Application_Id WHERE ur.User_Id = @pId AND a.Name = @pAppName;";
                     using (IDbCommand command = BuildCommand(query, new string[] { "@pId", "@pAppName" }, new DbType[] { DbType.Int32, DbType.String }, new object[] { user.Id, authTokenConfig.AppName }))
                     {
@@ -98,7 +100,7 @@ namespace Authentication.Token.Provider
             connection.Dispose();
         }
 
-        public bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles)
+        public bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles, string verifyCode)
         {
             transaction = null;
             try
@@ -135,17 +137,17 @@ namespace Authentication.Token.Provider
                             throw new ArgumentException("Ya existe una cuenta de usuario con estos datos");
                     }
                 }
-                int userId = 0;
-                query = "INSERT INTO user(FirstName, LastName, UserName, Password, IsEnabled, Email) VALUES (@pFirstName, @pLastName, @pUserName, @pPassword, @pIsEnabled, @pEmail);SELECT LAST_INSERT_ID();";
+                object userId = 0;
+                query = "INSERT INTO user(FirstName, LastName, UserName, Password, IsEnabled, Email, VerifyCode) VALUES (@pFirstName, @pLastName, @pUserName, @pPassword, @pIsEnabled, @pEmail, @pVerifyCode);SELECT LAST_INSERT_ID();";
                 using (IDbCommand command = BuildCommand(query, 
-                    new string[] { "@pFirstName", "@pLastName", "@pUserName", "@pPassword", "@pIsEnabled", "@pEmail" }, 
-                    new DbType[] { DbType.String, DbType.String, DbType.String, DbType.String, DbType.Boolean, DbType.String }, 
-                    new object[] { firstName, lastName, userName, password, isEnabled, email }))
+                    new string[] { "@pFirstName", "@pLastName", "@pUserName", "@pPassword", "@pIsEnabled", "@pEmail", "@pVerifyCode" }, 
+                    new DbType[] { DbType.String, DbType.String, DbType.String, DbType.String, DbType.Boolean, DbType.String, DbType.String }, 
+                    new object[] { firstName, lastName, userName, password, isEnabled, email, verifyCode }))
                 {
                     command.Transaction = transaction;
-                    userId = (int)command.ExecuteScalar();
+                    userId = command.ExecuteScalar();
                 }
-                if (userId > 0)
+                if (userId != null)
                 {
                     IList<int> roleIds = new List<int>();
                     if (roles != null && roles.Count > 0)
@@ -168,12 +170,12 @@ namespace Authentication.Token.Provider
                         if (roles.Count != roleIds.Count)
                             throw new Exception("Roles inválidos para la aplicación: " + authTokenConfig.AppName);
 
-                        query = "INSERT INTO user_role(User_Id, Role_Id) VALUES (";
+                        query = "INSERT INTO user_role(User_Id, Role_Id) VALUES ";
                         foreach (int roleId in roleIds)
-                            query += userId + ", " + roleId + "), ";
+                            query += "(" + userId + ", " + roleId + "), ";
                         query += "-";
-                        query = query.Replace(", -", ");");
-
+                        query = query.Replace(", -", ";");
+                        
                         using (IDbCommand command = connection.CreateCommand())
                         {
                             command.CommandText = query;
@@ -201,19 +203,22 @@ namespace Authentication.Token.Provider
             }
         }
 
-        public bool ConfirmAccount(string userName, EAuthenticationField authenticationField)
+        public bool ConfirmAccount(string userName, string verifyCode, EAuthenticationField authenticationField)
         {
             try
             {
                 if (string.IsNullOrEmpty(userName))
                     throw new ArgumentException("Cuenta inválida");
-                string fieldName = string.Empty;
+                string fieldName = string.Empty, fieldVerifyCode = string.Empty;
                 if (authenticationField == EAuthenticationField.USERNAME)
                     fieldName = "UserName";
                 if (authenticationField == EAuthenticationField.EMAIL)
+                {
                     fieldName = "Email";
+                    fieldVerifyCode = string.Format(" AND u.VerifyCode = '{0}'", verifyCode);
+                }
                 int id = 0;
-                string query = string.Format("SELECT u.Id, u.IsEnabled FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.IsEnabled AND u.{0} = @pUserName AND a.Name = @pAppName;", fieldName);
+                string query = string.Format("SELECT u.Id, u.IsEnabled FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.{0} = @pUserName AND a.Name = @pAppName{1};", fieldName, fieldVerifyCode);
                 using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { userName, authTokenConfig.AppName }))
                 {
                     using (IDataReader reader = command.ExecuteReader())
@@ -221,9 +226,13 @@ namespace Authentication.Token.Provider
                         if (reader.Read())
                         {
                             if (reader.GetBoolean(1))
-                                throw new ArgumentException("Ya existe una cuenta de usuario con estos datos");
+                                throw new ArgumentException("La cuenta ya se encuentra activa");
                             else
                                 id = reader.GetInt32(0);
+                        }
+                        else
+                        {
+                            throw new ArgumentException("No se pudo validar la cuenta");
                         }
                     }
                 }

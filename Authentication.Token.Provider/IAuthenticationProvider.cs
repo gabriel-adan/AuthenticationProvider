@@ -7,8 +7,8 @@ namespace Authentication.Token.Provider
     {
         T LogIn(string user, string password, EAuthenticationField authenticationField);
 
-        bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles = null);
+        bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles = null, string verifyCode = null);
 
-        bool ConfirmAccount(string userName, EAuthenticationField authenticationField);
+        bool ConfirmAccount(string userName, string verifyCode, EAuthenticationField authenticationField);
     }
 }
