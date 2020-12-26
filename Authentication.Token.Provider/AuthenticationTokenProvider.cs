@@ -248,6 +248,33 @@ namespace Authentication.Token.Provider
             }
         }
 
+        public bool IsEnabledAccount(string userName, EAuthenticationField authenticationField)
+        {
+            try
+            {
+                bool isEnabled = false;
+                string fieldName = string.Empty;
+                if (authenticationField == EAuthenticationField.USERNAME)
+                    fieldName = "UserName";
+                if (authenticationField == EAuthenticationField.EMAIL)
+                    fieldName = "Email";
+                string query = string.Format("SELECT u.IsEnabled FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.{0} = @pUserName AND a.Name = @pAppName;", fieldName);
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { userName, authTokenConfig.AppName }))
+                {
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        if (reader.Read())
+                            isEnabled = reader.GetBoolean(0);
+                    }
+                }
+                return isEnabled;
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
         IDbCommand BuildCommand(string query, string[] paramNames, DbType[] dbTypes, object[] values)
         {
             if (paramNames == null || dbTypes == null || values == null)

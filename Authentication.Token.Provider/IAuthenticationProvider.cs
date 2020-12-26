@@ -10,5 +10,7 @@ namespace Authentication.Token.Provider
         bool SigIn(string firstName, string lastName, string password, string userName, string email, bool isEnabled, EAuthenticationField authenticationField, IList<string> roles = null, string verifyCode = null);
 
         bool ConfirmAccount(string userName, string verifyCode, EAuthenticationField authenticationField);
+
+        bool IsEnabledAccount(string userName, EAuthenticationField authenticationField);
     }
 }
