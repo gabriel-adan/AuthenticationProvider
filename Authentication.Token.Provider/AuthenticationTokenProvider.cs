@@ -3,8 +3,8 @@ using System.Data;
 using System.Text;
 using System.Security.Claims;
 using System.Collections.Generic;
-using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
+using Microsoft.IdentityModel.Tokens;
 using Authentication.Token.Provider.Model;
 
 namespace Authentication.Token.Provider
@@ -29,8 +29,8 @@ namespace Authentication.Token.Provider
             {
                 User user = null;
                 IList<Claim> roles = new List<Claim>();
-                string query = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM User u WHERE u.{0} = @pUserName AND u.Password = @pPassword;", (authenticationField == EAuthenticationField.EMAIL ? "Email" : "UserName"));
-                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pPassword" }, new DbType[] { DbType.String, DbType.String }, new object[] { userName, password }))
+                string query = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE u.IsEnabled AND u.{0} = @pUserName AND u.Password = @pPassword AND a.Name = @pAppName;", (authenticationField == EAuthenticationField.EMAIL ? "Email" : "UserName"));
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pPassword", "@pAppName" }, new DbType[] { DbType.String, DbType.String, DbType.String }, new object[] { userName, password, authTokenConfig.AppName }))
                 {
                     using (IDataReader reader = command.ExecuteReader())
                     {
@@ -149,9 +149,9 @@ namespace Authentication.Token.Provider
                 }
                 if (userId != null)
                 {
-                    IList<int> roleIds = new List<int>();
                     if (roles != null && roles.Count > 0)
                     {
+                        IList<int> roleIds = new List<int>();
                         query = "SELECT r.Id FROM role r INNER JOIN application a ON a.Id = r.Application_Id WHERE a.Name = @pAppName AND r.Name IN (";
                         foreach (string role in roles)
                             query += "'" + role + "', ";
@@ -168,7 +168,7 @@ namespace Authentication.Token.Provider
                         }
 
                         if (roles.Count != roleIds.Count)
-                            throw new Exception("Roles inválidos para la aplicación: " + authTokenConfig.AppName);
+                            throw new Exception("Roles inválidos para el usuario. Aplicación: " + authTokenConfig.AppName);
 
                         query = "INSERT INTO user_role(User_Id, Role_Id) VALUES ";
                         foreach (int roleId in roleIds)
@@ -183,6 +183,8 @@ namespace Authentication.Token.Provider
                             command.ExecuteNonQuery();
                         }
                     }
+                    else
+                        throw new Exception("No se especificaron Roles para el usuario. Aplicación: " + authTokenConfig.AppName);
                     transaction.Commit();
                     return true;
                 }
@@ -231,9 +233,7 @@ namespace Authentication.Token.Provider
                                 id = reader.GetInt32(0);
                         }
                         else
-                        {
                             throw new ArgumentException("No se pudo validar la cuenta");
-                        }
                     }
                 }
                 using (IDbCommand command = connection.CreateCommand())
@@ -265,9 +265,148 @@ namespace Authentication.Token.Provider
                     {
                         if (reader.Read())
                             isEnabled = reader.GetBoolean(0);
+                        else
+                            throw new ArgumentException("No existe la cuenta");
                     }
                 }
                 return isEnabled;
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        public bool ApplyUserRole(string userName, string roleName, EAuthenticationField authenticationField)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(roleName))
+                    throw new ArgumentException("Rol inválido");
+                string fieldName = string.Empty;
+                if (authenticationField == EAuthenticationField.USERNAME)
+                    fieldName = "UserName";
+                if (authenticationField == EAuthenticationField.EMAIL)
+                    fieldName = "Email";
+                User user = null;
+                string query = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE r.IsEnabled AND u.IsEnabled AND a.IsEnabled AND a.Name = @pAppName AND u.{0} = @pUserName;", fieldName);
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { roleName, authTokenConfig.AppName }))
+                {
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            user = new User();
+                            user.Id = reader.GetInt32(0);
+                            if (!reader.IsDBNull(1))
+                                user.FirstName = reader.GetString(1);
+                            if (!reader.IsDBNull(2))
+                                user.LastName = reader.GetString(2);
+                            if (!reader.IsDBNull(3))
+                                user.UserName = reader.GetString(3);
+                            user.IsEnabled = reader.GetBoolean(4);
+                            if (!reader.IsDBNull(5))
+                                user.Email = reader.GetString(5);
+                        }
+                        else
+                            throw new ArgumentException("Usuario inválido");
+                    }
+                }
+                Role role = null;
+                query = string.Format("SELECT r.Id, r.Name, r.IsEnabled FROM role r INNER JOIN application a ON a.Id = r.Application_Id WHERE r.IsEnabled AND a.IsEnabled AND r.Name = @pRole AND a.Name = @pAppName;");
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pRole", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { roleName, authTokenConfig.AppName }))
+                {
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            role = new Role();
+                            role.Id = reader.GetInt32(0);
+                            role.Name = reader.GetString(1);
+                            role.IsEnabled = reader.GetBoolean(2);
+                        }
+                        else
+                            throw new ArgumentException("Rol no disponible");
+                    }
+                }
+                query = "SELECT User_Id, Role_Id FROM user_role WHERE User_Id = @pUserId AND Role_Id = @pRoleId;";
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserId", "@pRoleId" }, new DbType[] { DbType.Int32, DbType.Int32 }, new object[] { user.Id, role.Id }))
+                {
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        if (reader.Read())
+                            throw new ArgumentException("El usuario ya tiene asignado el Rol");
+                    }
+                }
+                query = "INSERT INTO user_role(User_Id, Role_Id) VALUES (@pUserId, @pRoleId);";
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserId", "@pRoleId" }, new DbType[] { DbType.Int32, DbType.Int32 }, new object[] { user.Id, role.Id }))
+                {
+                    return command.ExecuteNonQuery() > 0;
+                }
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        public bool DenyUserRole(string userName, string roleName, EAuthenticationField authenticationField)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(roleName))
+                    throw new ArgumentException("Rol inválido");
+                string fieldName = string.Empty;
+                if (authenticationField == EAuthenticationField.USERNAME)
+                    fieldName = "UserName";
+                if (authenticationField == EAuthenticationField.EMAIL)
+                    fieldName = "Email";
+                User user = null;
+                string query = string.Format("SELECT u.Id, u.FirstName, u.LastName, u.UserName, u.IsEnabled, u.Email FROM user u INNER JOIN user_role ur ON ur.User_Id = u.Id INNER JOIN role r ON r.Id = ur.Role_Id INNER JOIN application a ON a.Id = r.Application_Id WHERE r.IsEnabled AND u.IsEnabled AND a.IsEnabled AND a.Name = @pAppName AND u.{0} = @pUserName;", fieldName);
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserName", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { roleName, authTokenConfig.AppName }))
+                {
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            user = new User();
+                            user.Id = reader.GetInt32(0);
+                            if (!reader.IsDBNull(1))
+                                user.FirstName = reader.GetString(1);
+                            if (!reader.IsDBNull(2))
+                                user.LastName = reader.GetString(2);
+                            if (!reader.IsDBNull(3))
+                                user.UserName = reader.GetString(3);
+                            user.IsEnabled = reader.GetBoolean(4);
+                            if (!reader.IsDBNull(5))
+                                user.Email = reader.GetString(5);
+                        }
+                        else
+                            throw new ArgumentException("Usuario inválido");
+                    }
+                }
+                Role role = null;
+                query = string.Format("SELECT r.Id, r.Name, r.IsEnabled FROM role r INNER JOIN application a ON a.Id = r.Application_Id WHERE r.IsEnabled AND a.IsEnabled AND r.Name = @pRole AND a.Name = @pAppName;");
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pRole", "@pAppName" }, new DbType[] { DbType.String, DbType.String }, new object[] { roleName, authTokenConfig.AppName }))
+                {
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            role = new Role();
+                            role.Id = reader.GetInt32(0);
+                            role.Name = reader.GetString(1);
+                            role.IsEnabled = reader.GetBoolean(2);
+                        }
+                        else
+                            throw new ArgumentException("Rol no disponible");
+                    }
+                }
+                query = "DELETE FROM user_role WHERE User_Id = @pUserId AND Role_Id = @pRoleId;";
+                using (IDbCommand command = BuildCommand(query, new string[] { "@pUserId", "@pRoleId" }, new DbType[] { DbType.Int32, DbType.Int32 }, new object[] { user.Id, role.Id }))
+                {
+                    return command.ExecuteNonQuery() > 0;
+                }
             }
             catch
             {

@@ -12,5 +12,9 @@ namespace Authentication.Token.Provider
         bool ConfirmAccount(string userName, string verifyCode, EAuthenticationField authenticationField);
 
         bool IsEnabledAccount(string userName, EAuthenticationField authenticationField);
+
+        bool ApplyUserRole(string userName, string roleName, EAuthenticationField authenticationField);
+
+        bool DenyUserRole(string userName, string roleName, EAuthenticationField authenticationField);
     }
 }
